@@ -1,10 +1,6 @@
 import numpy as np
 from PIL import Image
 import os
-from collections import defaultdict
-
-# Global flag to ensure detailed (1,6) trace happens only for the first relevant call
-debug_trace_done_for_1_6_gen0 = False
 
 def read_starting_position(file_path):
     """
@@ -33,104 +29,33 @@ def read_starting_position(file_path):
     
     return grid
 
-def resolve_neighbor_coordinates(r_cell, c_cell, dr_query, dc_query, h_portals, v_portals, grid_rows, grid_cols):
+def count_neighbors(grid):
     """
-    Resolves the effective coordinates of a neighbor for a given cell and direction,
-    considering wormhole rules and precedence (Top > Right > Bottom > Left).
-
-    Args:
-        r_cell (int): Row of the current cell.
-        c_cell (int): Column of the current cell.
-        dr_query (int): Row offset for the queried neighbor direction (-1, 0, or 1).
-        dc_query (int): Column offset for the queried neighbor direction (-1, 0, or 1).
-        h_portals (dict): Horizontal wormhole portal map.
-        v_portals (dict): Vertical wormhole portal map.
-        grid_rows (int): Total rows in the grid.
-        grid_cols (int): Total columns in the grid.
-
-    Returns:
-        tuple: (eff_r, eff_c) effective coordinates of the neighbor.
-    """
-
-    # Check Vertical Wormhole influence (Top/Bottom precedence)
-    v_pair_coords = v_portals.get((r_cell, c_cell))
-    if v_pair_coords:
-        v_pair_r, v_pair_c = v_pair_coords
-        # Case 1: (r_cell,c_cell) is TOP end of V-wormhole, looking DOWN (dr_query=1)
-        if dr_query == 1 and r_cell < v_pair_r:
-            return v_pair_r, v_pair_c + dc_query
-        # Case 2: (r_cell,c_cell) is BOTTOM end of V-wormhole, looking UP (dr_query=-1)
-        if dr_query == -1 and r_cell > v_pair_r:
-            return v_pair_r, v_pair_c + dc_query
-
-    # Check Horizontal Wormhole influence (Right/Left precedence)
-    h_pair_coords = h_portals.get((r_cell, c_cell))
-    if h_pair_coords:
-        h_pair_r, h_pair_c = h_pair_coords
-        # Case 1: (r_cell,c_cell) is LEFT end of H-wormhole, looking RIGHT (dc_query=1)
-        if dc_query == 1 and c_cell < h_pair_c:
-            return h_pair_r + dr_query, h_pair_c
-        # Case 2: (r_cell,c_cell) is RIGHT end of H-wormhole, looking LEFT (dc_query=-1)
-        if dc_query == -1 and c_cell > h_pair_c:
-            return h_pair_r + dr_query, h_pair_c
-
-    # Default: No overriding wormhole rule applied for this (cell, direction) combination
-    return r_cell + dr_query, c_cell + dc_query
-
-def count_neighbors(grid, h_portals, v_portals, generation_count_for_debug=0):
-    """
-    Count the number of live neighbors for each cell in the grid,
-    considering wormholes.
+    Count the number of live neighbors for each cell in the grid.
     
     Args:
-        grid (numpy.ndarray): 2D boolean array representing the current state.
-        h_portals (dict): Horizontal wormhole portal map.
-        v_portals (dict): Vertical wormhole portal map.
-        generation_count_for_debug (int): Passed to control one-time debug print.
+        grid (numpy.ndarray): 2D boolean array representing the current state
         
     Returns:
-        numpy.ndarray: 2D integer array with the count of live neighbors for each cell.
+        numpy.ndarray: 2D integer array with the count of live neighbors for each cell
     """
-    global debug_trace_done_for_1_6_gen0
     rows, cols = grid.shape
-    neighbor_counts = np.zeros((rows, cols), dtype=int)
+    # Create a zero-padded version of the grid to handle edges
+    padded = np.pad(grid, pad_width=1, mode='constant', constant_values=False)
     
-    # Determine if this is the specific call we want to trace (first generation calculation)
-    is_first_gen_count = (generation_count_for_debug == 0)
+    # Initialize neighbor count array
+    neighbors = np.zeros((rows, cols), dtype=int)
+    
+    # Count neighbors using array slicing
+    for i in range(3):
+        for j in range(3):
+            if i == 1 and j == 1:  # Skip the cell itself
+                continue
+            neighbors += padded[i:i+rows, j:j+cols]
+    
+    return neighbors
 
-    for r in range(rows):
-        for c in range(cols):
-            should_trace_this_cell = is_first_gen_count and (r == 1 and c == 6) and not debug_trace_done_for_1_6_gen0
-            
-            if should_trace_this_cell:
-                print(f"\n--- Counting neighbors for cell ({r},{c}) (State: {'Live' if grid[r,c] else 'Dead'}) during Gen 0->1 calculation ---")
-
-            count = 0
-            for dr in [-1, 0, 1]:
-                for dc in [-1, 0, 1]:
-                    if dr == 0 and dc == 0:
-                        continue
-                    
-                    eff_r, eff_c = resolve_neighbor_coordinates(r, c, dr, dc, h_portals, v_portals, rows, cols)
-                    
-                    is_live_neighbor = False
-                    if 0 <= eff_r < rows and 0 <= eff_c < cols:
-                        if grid[eff_r, eff_c]:
-                            is_live_neighbor = True
-                            count += 1
-                    
-                    if should_trace_this_cell:
-                        original_neighbor = (r + dr, c + dc)
-                        print(f"  Query dir ({dr},{dc}): Original N {original_neighbor} -> Effective N ({eff_r},{eff_c}). Effective N is Live: {is_live_neighbor}")
-            
-            neighbor_counts[r, c] = count
-            if should_trace_this_cell:
-                print(f"--- Total live neighbors for ({r},{c}): {count} ---")
-                debug_trace_done_for_1_6_gen0 = True # Mark trace as done for this specific scenario
-            
-    return neighbor_counts
-
-def next_generation(grid, h_portals, v_portals, generation_count_for_debug=0):
+def next_generation(grid):
     """
     Compute the next generation of the Game of Life based on the current state.
     
@@ -142,15 +67,11 @@ def next_generation(grid, h_portals, v_portals, generation_count_for_debug=0):
     
     Args:
         grid (numpy.ndarray): 2D boolean array representing the current state
-        h_portals (dict): Horizontal wormhole portal map.
-        v_portals (dict): Vertical wormhole portal map.
-        generation_count_for_debug (int): Passed to control one-time debug print in count_neighbors.
         
     Returns:
         numpy.ndarray: 2D boolean array representing the next generation
     """
-    print(f"DEBUG: next_generation called for generation_count_for_debug = {generation_count_for_debug}") # Debug print
-    neighbor_counts = count_neighbors(grid, h_portals, v_portals, generation_count_for_debug)
+    neighbor_counts = count_neighbors(grid)
     
     # Apply the rules
     new_grid = np.zeros_like(grid)
@@ -211,22 +132,20 @@ def display_grids_side_by_side(grid1, grid2, label1="Simulated", label2="Expecte
         line2 = ''.join(['█' if cell else '.' for cell in row2])
         print(f"{line1} | {line2}")
 
-def run_simulation(initial_grid, num_generations, h_portals, v_portals):
+def run_simulation(initial_grid, num_generations):
     """
     Run the Game of Life simulation for a specified number of generations.
     
     Args:
         initial_grid (numpy.ndarray): 2D boolean array representing the initial state
         num_generations (int): Number of generations to simulate
-        h_portals (dict): Horizontal wormhole portal map.
-        v_portals (dict): Vertical wormhole portal map.
         
     Returns:
         numpy.ndarray: 2D boolean array representing the final state
     """
     current_grid = initial_grid.copy()
-    for gen_idx in range(num_generations):
-        current_grid = next_generation(current_grid, h_portals, v_portals, gen_idx)
+    for _ in range(num_generations):
+        current_grid = next_generation(current_grid)
     return current_grid
 
 def compare_grids(grid1, grid2):
@@ -248,91 +167,21 @@ def compare_grids(grid1, grid2):
     match_percentage = (matches / total_cells) * 100
     return np.array_equal(grid1, grid2), match_percentage
 
-def read_wormhole_map(image_path):
-    """
-    Reads a wormhole map image and returns a dictionary mapping portal coordinates to their pairs.
-    Non-black pixels of the same color define a wormhole pair.
-
-    Args:
-        image_path (str): Path to the wormhole tunnel image file.
-
-    Returns:
-        dict: A dictionary where keys are (row, col) tuples of a portal cell,
-              and values are (row, col) tuples of the paired portal cell.
-              Returns an empty dict if file not found or no portals defined.
-    """
-    if not os.path.exists(image_path):
-        print(f"Warning: Wormhole map file not found: {image_path}")
-        return {}
-
-    with Image.open(image_path) as img:
-        img_rgb = img.convert('RGB')
-        width, height = img_rgb.size
-        
-        color_to_coords = defaultdict(list)
-        for x in range(width):
-            for y in range(height):
-                color = img_rgb.getpixel((x, y))
-                if color != (0, 0, 0): # Not black
-                    color_to_coords[color].append((y, x)) # Store as (row, col)
-        
-        portals = {}
-        for color, coords_list in color_to_coords.items():
-            if len(coords_list) == 2:
-                p1, p2 = coords_list[0], coords_list[1]
-                portals[p1] = p2
-                portals[p2] = p1
-            else:
-                print(f"Warning: Color {color} in {image_path} does not define a pair (found {len(coords_list)} pixels).")
-        return portals
-
 if __name__ == "__main__":
-    # Reset the global flag at the start of each run if necessary, though for a single run this is fine.
-    debug_trace_done_for_1_6_gen0 = False
-
     # Example usage
-    example_dir = "../archive/example-0"
-    start_pos_file = "starting_position.png"
-    h_tunnel_file = "horizontal_tunnel.png"
-    v_tunnel_file = "vertical_tunnel.png"
-
-    example_path = os.path.join(example_dir, start_pos_file)
-    h_tunnel_path = os.path.join(example_dir, h_tunnel_file)
-    v_tunnel_path = os.path.join(example_dir, v_tunnel_file)
-
+    example_path = "../archive/example-0/starting_position.png"
     try:
         # Read initial state
         initial_state = read_starting_position(example_path)
         print("Initial state:")
         display_grid(initial_state)
-
-        # Read wormhole maps
-        print(f"Loading horizontal wormholes from: {h_tunnel_path}")
-        h_portals = read_wormhole_map(h_tunnel_path)
-        print(f"Found {len(h_portals)//2 if h_portals else 0} horizontal wormhole pairs.")
-        if h_portals:
-            print("Horizontal Portals (first 5 pairs):")
-            for i, (p_start, p_end) in enumerate(h_portals.items()):
-                if i < 10 and p_start < p_end: # Print each pair once, max 5 pairs
-                     print(f"  {p_start} <-> {p_end}")
-                if i >= 10: break # limit printing
         
-        print(f"Loading vertical wormholes from: {v_tunnel_path}")
-        v_portals = read_wormhole_map(v_tunnel_path)
-        print(f"Found {len(v_portals)//2 if v_portals else 0} vertical wormhole pairs.")
-        if v_portals:
-            print("Vertical Portals (first 5 pairs):")
-            for i, (p_start, p_end) in enumerate(v_portals.items()):
-                if i < 10 and p_start < p_end: # Print each pair once, max 5 pairs
-                    print(f"  {p_start} <-> {p_end}")
-                if i >= 10: break # limit printing
-
         # Run simulation for different steps and save results
         output_dir = os.path.dirname(example_path)
-        steps = [1]
+        steps = [1, 10, 100, 1000]
         
         for step in steps:
-            result = run_simulation(initial_state, step, h_portals, v_portals)
+            result = run_simulation(initial_state, step)
             output_path = os.path.join(output_dir, f"{step}.png")
             save_grid_as_image(result, output_path)
             print(f"\nAfter {step} generations:")
